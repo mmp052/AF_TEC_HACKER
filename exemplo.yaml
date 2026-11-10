@@ -1,0 +1,2 @@
+investigation_id: "recon-enumeracao"
+objective: "Reconhecimento e enumeracao do Juice Shop em http://localhost:3000: portas/servicos, rotas e diretorios ocultos."

@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Artefatos locais do lab (execucoes reais, evidencias brutas)
+runs/
+
+# SecLists clonado localmente (~2.5 GB, repositorio externo)
+wordlists/SecLists/
+
+# Varios
+*.swp
+*~
+.DS_Store
+
+# Enunciado da AF (documento do curso, nao faz parte do codigo)
+AF - Tecnologias Hackers 26-2.pdf
