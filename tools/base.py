@@ -13,13 +13,14 @@ def run_cmd(cmd: list[str], timeout: int = 120) -> ToolResult:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         out = (p.stdout or "")[:8000]
         err = (p.stderr or "")[:8000]
+        combined = out + (("\n[stderr]\n" + err) if err else "")
         return ToolResult(
             exit_code=p.returncode,
             stdout=out,
             stderr=err,
             duration_ms=int((time.time() - t0) * 1000),
             command=" ".join(cmd),
-            summary=(out or err)[:4000],
+            summary=combined[:4000],
         )
     except subprocess.TimeoutExpired:
         return ToolResult(

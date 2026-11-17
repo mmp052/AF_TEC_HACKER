@@ -17,8 +17,11 @@ Ferramentas permitidas: nmap, http_request, gobuster, wfuzz, conclude.
 Como usar cada ferramenta (cards):
 
 Ferramenta: nmap
-- Dupla fase automatica: sweep '-p-' e -sV nas portas abertas. NAO passe extra_args — so target/host.
-- Exemplo: {"target": "http://localhost:3000"} — o codigo normaliza o alvo e roda as duas fases.
+- Sem params alem de target/host: o codigo roda em duas fases (sweep '-p- --open -Pn' e depois -sV so nas portas abertas). Exemplo: {"target": "http://localhost:3000"}
+- Voce PODE pedir um scan especifico com extra_args. Ex.: para rodar 'nmap -sV -p 3000 localhost', proponha {"target": "localhost", "extra_args": "-sV -p 3000"}
+- extra_args vira UM UNICO comando seu no lugar das duas fases. O alvo e normalizado (esquema/porta do target sao descartados).
+- Mesmo alvo, scans diferentes = parametros diferentes: varie extra_args (ex.: "-sV -p 3000"), nao so o target.
+- Flags bloqueadas no codigo: -oX, -oA, --script=, -iL. Sem scripts NSE.
 
 Ferramenta: http_request
 - params: {"url": "http://localhost:3000/caminho"} — GET apenas (seguro).
@@ -50,6 +53,7 @@ Regras:
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _NEXT_STEP_RE = re.compile(r"PROXIMO_PASSO:\s*(.+)", re.IGNORECASE)
+_NEXT_STEP_LINE_RE = re.compile(r"PROXIMO_PASSO:[^\n]*", re.IGNORECASE)
 _URL_RE = re.compile(r"https?://[^\s\"'<>)]+")
 _REF_PATH_RE = re.compile(r"(?<![A-Za-z0-9_.-])/[A-Za-z0-9_\.-]{2,64}(?:/[A-Za-z0-9_\.-]{1,64})*")
 _REF_DENYLIST = {"tcp", "udp", "ipp", "icmp"}
@@ -111,21 +115,71 @@ def parse_action(raw: str) -> ActionProposal:
     return ActionProposal(**obj)
 
 
+def build_history_digest(history: list[dict], max_entries: int = 5,
+                         max_chars: int = 1600) -> str:
+    """Resumo compacto do historico para o prompt: uma linha por entrada,
+    sem corte no meio do JSON e sem blobs de fingerprint (SF:) do nmap.
+    Se estourar o orcamento, descarta entradas mais antigas (nunca a ultima)."""
+    entries: list[str] = []
+    for h in history[-max_entries:]:
+        if not isinstance(h, dict):
+            continue
+        tool = h.get("tool", "?")
+        params = h.get("params")
+        result = h.get("result_summary") if h.get("result_summary") is not None else h.get("result")
+        if isinstance(result, (dict, list)):
+            result = json.dumps(result, ensure_ascii=False, default=str)
+        # remove blob de fingerprint do nmap e colapsa espacos
+        result = " ".join(
+            line.strip() for line in str(result or "").splitlines()
+            if not line.strip().startswith("SF:")
+        ).strip()
+        interp = " ".join(str(h.get("interpretation") or "").split())
+        parts = [f"- {tool}"]
+        if params:
+            parts.append("params=" + json.dumps(params, ensure_ascii=False,
+                                                separators=(",", ":"), default=str))
+        if result:
+            parts.append("-> " + result[:300])
+        if interp:
+            parts.append("| interp: " + interp[:200])
+        if h.get("findings_note"):
+            parts.append("| fato: " + str(h["findings_note"]))
+        if h.get("human_instruction"):
+            parts.append("| INSTRUCAO DO HUMANO: " + str(h["human_instruction"]))
+        entries.append(" ".join(parts))
+    digest = "\n".join(entries)
+    while len(digest) > max_chars and len(entries) > 1:
+        entries.pop(0)
+        digest = "\n".join(entries)
+    return digest[:max_chars]
+
+
 def build_propose_messages(history: list[dict], objective: str, reforco: bool = False,
                              extra_note: str | None = None) -> list[dict]:
-    user = f"Objetivo: {objective}\n\nHistorico recente (resumido):\n" + json.dumps(history[-5:], ensure_ascii=False)[:2000]
+    user = f"Objetivo: {objective}\n\nHistorico recente (resumido):\n" + build_history_digest(history)
     if reforco:
         user += "\nATENCAO: responda APENAS JSON, sem markdown, sem texto antes/depois."
     if extra_note:
         user += f"\nATENCAO: {extra_note}"
-    instruction = next((h.get("human_instruction") for h in reversed(history)
-                        if isinstance(h, dict) and h.get("human_instruction")), None)
-    if instruction:
-        user += f"\nInstrucao do humano para o proximo passo: {instruction}"
-    next_step = next((h.get("next_step") for h in reversed(history)
-                      if isinstance(h, dict) and h.get("next_step")), None)
-    if next_step:
-        user += f"\nSua intencao declarada no passo anterior: {next_step}"
+    instruction_entry = next((h for h in reversed(history)
+                              if isinstance(h, dict) and h.get("human_instruction")), None)
+    if instruction_entry:
+        # instrucao humana tem prioridade: nao ecoar a intencao declarada (pode
+        # contradizer o humano e reforca a acao que ele mandou evitar)
+        user += ("\nInstrucao do humano para o proximo passo (OBRIGATORIA, tem prioridade "
+                 f"sobre qualquer intencao declarada anteriormente): {instruction_entry['human_instruction']}")
+        banned_tool = instruction_entry.get("tool")
+        if banned_tool:
+            user += ("\nPROIBIDO repetir a acao anterior: " + banned_tool + " "
+                     + json.dumps(instruction_entry.get("params") or {},
+                                  ensure_ascii=False, separators=(",", ":"), default=str)
+                     + " — proponha algo DIFERENTE.")
+    else:
+        next_step = next((h.get("next_step") for h in reversed(history)
+                          if isinstance(h, dict) and h.get("next_step")), None)
+        if next_step:
+            user += f"\nSua intencao declarada no passo anterior: {next_step}"
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
 
 
@@ -206,3 +260,18 @@ def extract_refs(text: str | None) -> list[str]:
 def find_missing_refs(refs: list[str], haystack: str | None) -> list[str]:
     hay = str(haystack or "")
     return [r for r in refs if r not in hay]
+
+
+def truncate_at_next_step(text: str | None) -> str:
+    """Corta a interpretacao no fim da 1a linha PROXIMO_PASSO.
+
+    O modelo as vezes cumpre a tarefa (resposta + PROXIMO_PASSO) e depois
+    continua com raciocinio de verificacao sem nenhum marcador de fim;
+    o stop 
+user nao pega isso. Tudo apos a linha PROXIMO_PASSO e descarte.
+    """
+    t_ = str(text or "")
+    m = _NEXT_STEP_LINE_RE.search(t_)
+    if not m:
+        return t_
+    return t_[:m.end()].rstrip()

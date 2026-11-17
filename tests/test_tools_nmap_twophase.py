@@ -125,3 +125,55 @@ def test_run_nmap_timeout_padrao_acomportado_a_uma_varredura_completa():
 def test_validate_url_continua_aplicado_nas_duas_fases():
     with pytest.raises(ValueError):
         nmap_tool.run_nmap({"target": "example.com"})
+
+
+def test_aliases_de_extra_args_sao_respeitados():
+    for alias in ("args", "flags", "options", "command"):
+        calls = []
+
+        def fake_run(cmd, timeout=120):
+            calls.append(cmd)
+            return ToolResult(exit_code=0, stdout="out", stderr="",
+                              duration_ms=1, command=" ".join(cmd), summary="s")
+
+        with mock.patch.object(nmap_tool, "has_binary", return_value=True), \
+             mock.patch.object(nmap_tool, "run_cmd", side_effect=fake_run):
+            nmap_tool.run_nmap({"target": "localhost", alias: "-sV -p 3000"})
+
+        assert len(calls) == 1, alias
+        cmd = " ".join(calls[0])
+        assert "-sV" in cmd and "-p 3000" in cmd
+
+
+def test_command_com_nmap_e_alvo_no_fim_eh_normalizado():
+    calls = []
+
+    def fake_run(cmd, timeout=120):
+        calls.append(cmd)
+        return ToolResult(exit_code=0, stdout="out", stderr="",
+                          duration_ms=1, command=" ".join(cmd), summary="s")
+
+    with mock.patch.object(nmap_tool, "has_binary", return_value=True), \
+         mock.patch.object(nmap_tool, "run_cmd", side_effect=fake_run):
+        nmap_tool.run_nmap({"target": "localhost",
+                            "command": "nmap -sV -p 3000 localhost"})
+
+    assert calls[0] == ["nmap", "-sV", "-p", "3000", "localhost"]
+
+
+def test_extra_args_que_vira_vazio_apos_strip_volta_ao_default():
+    calls = []
+
+    def fake_run(cmd, timeout=120):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return ToolResult(exit_code=0, stdout=SWEEP_OUTPUT, stderr="",
+                              duration_ms=1, command=" ".join(cmd), summary=SWEEP_OUTPUT)
+        return ToolResult(exit_code=0, stdout=VERSION_OUTPUT, stderr="",
+                          duration_ms=1, command=" ".join(cmd), summary=VERSION_OUTPUT)
+
+    with mock.patch.object(nmap_tool, "has_binary", return_value=True), \
+         mock.patch.object(nmap_tool, "run_cmd", side_effect=fake_run):
+        nmap_tool.run_nmap({"target": "localhost", "extra_args": "nmap localhost"})
+
+    assert len(calls) == 2  # sem flags uteis: fluxo default (duas fases)

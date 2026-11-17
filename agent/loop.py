@@ -11,14 +11,15 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 
 from agent.ollama_client import (ask_ollama, extract_next_step, expected_tool_from_text,
-                             extract_refs, find_missing_refs, propose_action, strip_think)
+                             extract_refs, find_missing_refs, propose_action,
+                             strip_think, truncate_at_next_step)
 from agent_schemas import HumanDecision, ToolResult
 from evidence_store import EvidenceStore
 from llm_io_log import append_llm_io
 from routing.wordlist import choose_wordlist, describe_choice
 from tools.gobuster_tool import run_gobuster
 from tools.http_tool import run_http
-from tools.nmap_tool import run_nmap, normalize_target
+from tools.nmap_tool import run_nmap, normalize_target, get_extra_args, parse_extra_args
 from tools.wfuzz_tool import run_wfuzz
 
 console = Console()
@@ -57,7 +58,8 @@ def build_evidence_item(investigation_id: str, i: int, proposal, decision,
         "tool": proposal.tool,
         "command": result.command,
         "result": {"exit_code": result.exit_code, "summary": result.summary,
-                   "stdout": result.stdout[:4000]},
+                   "stdout": result.stdout[:4000], "stderr": result.stderr[:2000],
+                   "duration_ms": result.duration_ms},
         "llm_interpretation": interpretation,
         "human_validation": {"verdict": verdict, "instruction": instruction or None,
                              "refs_missing": refs_missing or []},
@@ -74,8 +76,11 @@ def findings_note(tool: str, result) -> str:
     """
     if tool not in ("gobuster", "wfuzz"):
         return ""
-    # stdout e a fonte (summary duplica o mesmo texto e infla a contagem)
+    if result.exit_code != 0:
+        return (f"a ferramenta FALHOU (exit code {result.exit_code}): saida vazia/parcial "
+                "nao eh evidencia de ausencia de achados — leia o stderr antes de interpretar")
     texto = result.stdout or result.summary or ""
+    # stdout e a fonte (summary duplica o mesmo texto e infla a contagem)
     hits = _FINDING_RE.findall(texto)
     if hits:
         return f"{len(hits)} achado(s) com resposta de sucesso/redirect/auth na saida"
@@ -89,8 +94,11 @@ def executed_key(tool: str, params: dict) -> str:
         target = p.pop("target", None)
         host = p.pop("host", None)
         target = normalize_target(target if target is not None else host)
-        rest = {k: v for k, v in sorted(p.items()) if k != "wordlist"}
-        rest = {"target": target, **rest}
+        extra = get_extra_args(p)
+        toks = parse_extra_args(extra, default=None, target=target) if extra is not None else []
+        rest = {"target": target}
+        if toks:
+            rest["extra_args"] = " ".join(toks)
     else:
         rest = {k: v for k, v in p.items() if k != "wordlist"}
     return tool + "|" + json.dumps(rest, sort_keys=True, ensure_ascii=False, default=str)
@@ -158,7 +166,9 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
                     endpoint, model, history, objective,
                     runs_dir=runs_dir, investigation_id=investigation_id,
                     extra_note="Voce ja executou exatamente esta acao nesta investigacao. "
-                               "Proponha uma ferramenta e/ou parametros DIFERENTES que facam progresso.")
+                               "Proponha uma ferramenta e/ou parametros DIFERENTES que facam progresso. "
+                               "Se quiser um nmap especifico (ex.: 'nmap -sV -p 3000 localhost'), "
+                               "passe extra_args, ex.: {\"target\": \"localhost\", \"extra_args\": \"-sV -p 3000\"}.")
             except Exception as e:
                 console.print(f"[red]LLM falhou ao re-propor: {e}[/]")
                 break
@@ -267,7 +277,7 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
                                      {"role": "assistant", "content": "Resposta:"}],
                                     format_json=False,
                                     stop=["\nuser", "\nUser", "\nUSER"])
-            interpretation = strip_think(raw_interp)
+            interpretation = truncate_at_next_step(strip_think(raw_interp))
             if not interpretation:
                 interpretation = "falha ao interpretar: resposta vazia"
         except Exception as e:

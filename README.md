@@ -67,7 +67,7 @@ O loop supervisionado:
 
 ## Ferramentas
 
-- **nmap** — duas fases (uma única aprovação humana): 1) sweep `-p- --open -Pn` (todas as portas, rápido — achou o Juice Shop e o Ollama em ~1,4 s neste kit); 2) `-sV -p <portas abertas>` (versão/service detection **sem scripts** — os scripts NSE (`-sC`) foram removidos por simplicidade; a fase 2 ainda leva ~110 s neste kit, dominada pelos probes contra as portas desconhecidas `34133`/`49374`; use `--version-light` aprovado no extra_args para acelerar). Se nada aberto aparecer no sweep, a fase 2 não roda. Override single-shot: o LLM pode aprovar `extra_args` próprios (ex.: `--top-ports 100`). Default `timeout` da tool: 300 s.
+- **nmap** — duas fases (uma única aprovação humana): 1) sweep `-p- --open -Pn` (todas as portas, rápido — achou o Juice Shop e o Ollama em ~1,4 s neste kit); 2) `-sV -p <portas abertas>` (versão/service detection **sem scripts** — os scripts NSE (`-sC`) foram removidos por simplicidade; a fase 2 ainda leva ~110 s neste kit, dominada pelos probes contra as portas desconhecidas `34133`/`49374`; use `--version-light` aprovado no extra_args para acelerar). Se nada aberto aparecer no sweep, a fase 2 não roda. O LLM **pode pedir um scan específico**: `extra_args` (aliases aceitos: `args`/`flags`/`options`/`command`) substituem as duas fases por um único comando (ex.: `{"target": "localhost", "extra_args": "-sV -p 3000"}`); `nmap` inicial e token final igual ao alvo são descartados. Flags de escrita/script (`-oX`, `-oA`, `--script=`, `-iL`) são bloqueadas pelo guardrail; NSE segue fora. Default `timeout` da tool: 300 s.
 - **http_request** — `httpx`, com headers/body. Usado p/ Juice Shop direto.
 - **gobuster** — `gobuster dir` com wordlist escolhida pelo routing (por evidência).
 - **wfuzz** — `wfuzz -c -z file,<wordlist> -u <url com FUZZ>` com wordlist escolhida pelo routing.
@@ -81,6 +81,7 @@ Se `nmap/gobuster/wfuzz` não estiverem no `PATH`, o agente usa **fallback Docke
 - **`tool=conclude`**: o agente declara conclusao; o humano confirma e o laco encerra.
 - **Fato do codigo** (gobuster/wfuzz): a interpretacao recebe explicitamente quantos achados a tool reportou (ex.: "nenhum achado listado na saida") — zero-achado nao pode virar "encontrou /admin".
 - **Tripwire de referencias** (`Verificacao de referencias`): a interpretacao nao pode citar caminhos que nao constem na saida/stderr/comando da tool (URLs sao ignoradas); qualquer referencia ausente gera painel vermelho e fica registrada em `human_validation.refs_missing` na evidencia.
+- **Interpretacao truncada em `PROXIMO_PASSO:`**: tudo que o modelo emite depois da linha `PROXIMO_PASSO:` (re-raciocinio "we are given...", segunda resposta, fake turno) e descartado no codigo (`truncate_at_next_step`) — o painel, a evidencia e o tripwire veem so a conclusao; `llm_io.jsonl` preserva a resposta bruta integra para auditoria.
 
 ## Wordlists — escolhidas por codigo a partir da evidencia
 

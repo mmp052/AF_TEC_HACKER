@@ -21,6 +21,17 @@ DOCKER_IMAGE = "instrumentisto/nmap:latest"
 _TARGET_RE = re.compile(r"^(?:[a-zA-Z]+://)?([^/:]+)")
 _PORT_RE = re.compile(r"(\d+)/tcp\s+open")
 
+# o 4B emite variacoes: args/flags/options/command -> todos significam extra_args
+_EXTRA_ARG_ALIASES = ("extra_args", "args", "flags", "options", "command")
+
+
+def get_extra_args(params: dict):
+    for key in _EXTRA_ARG_ALIASES:
+        v = params.get(key)
+        if v is not None and str(v).strip():
+            return v
+    return None
+
 
 def normalize_target(raw: str | None) -> str:
     if not raw:
@@ -29,12 +40,18 @@ def normalize_target(raw: str | None) -> str:
     return m.group(1).strip() if m and m.group(1) else "localhost"
 
 
-def parse_extra_args(extra, default: str | None = None) -> list[str]:
+def parse_extra_args(extra, default: str | None = None,
+                     target: str | None = None) -> list[str]:
     if extra is None:
         extra = default if default is not None else DEFAULT_ARGS
-    if isinstance(extra, str):
-        return extra.split()
-    return list(extra)
+    toks = extra.split() if isinstance(extra, str) else [str(x) for x in extra]
+    # tolera 'nmap -sV -p 3000 localhost' vindo do modelo: descarta o 'nmap'
+    # inicial e um token final que repita o alvo (o alvo e acrescentado pelo codigo)
+    if toks and toks[0].lower() == "nmap":
+        toks = toks[1:]
+    if target and toks and toks[-1] == target:
+        toks = toks[:-1]
+    return toks
 
 
 def sweep_args() -> list[str]:
@@ -80,12 +97,13 @@ def run_nmap(params: dict, timeout: int = 300,
     validate_url(f"http://{target}", allowed)
     use_docker = not has_binary("nmap")
 
-    extra = params.get("extra_args")
-    if extra:
-        # override: single-shot com os args informados (comportamento antigo)
-        extra_list = parse_extra_args(extra)
-        validate_nmap_args(extra_list)
-        return run_cmd(build_nmap_command(target, extra_list, use_docker), timeout)
+    extra = get_extra_args(params)
+    if extra is not None:
+        # override: single-shot com os args informados pelo modelo
+        extra_list = parse_extra_args(extra, default=None, target=target)
+        if extra_list:
+            validate_nmap_args(extra_list)
+            return run_cmd(build_nmap_command(target, extra_list, use_docker), timeout)
 
     # fase 1: sweep
     sweep_cmd = build_nmap_command(target, sweep_args(), use_docker)

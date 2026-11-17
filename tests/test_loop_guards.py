@@ -271,9 +271,19 @@ def test_interpretacao_envia_stop_para_cortar_fake_turno(tmp_path):
 # --- findings_note: fato do codigo injetado no prompt/historico -------------
 
 def test_findings_note_gobuster_vazio_reporta_sem_achados():
-    res = ToolResult(exit_code=1, stdout="Starting gobuster...\n(nada)\n", stderr="",
+    res = ToolResult(exit_code=0, stdout="Starting gobuster...\n(nada)\n", stderr="",
                      duration_ms=1, command="gobuster dir ...", summary="Starting gobuster...\n")
     assert "nenhum achado" in loop.findings_note("gobuster", res)
+
+
+def test_findings_note_ferramenta_falhou_nao_diz_sem_achados():
+    res = ToolResult(exit_code=1, stdout="Starting gobuster in directory enumeration mode\n",
+                     stderr="the server returns a status code... => 200 (Length: 9984)",
+                     duration_ms=1, command="gobuster dir ...", summary="Starting gobuster...\n")
+    note = loop.findings_note("gobuster", res)
+    assert "FALHOU" in note
+    assert "exit" in note.lower()
+    assert "nenhum achado" not in note
 
 
 def test_findings_note_gobuster_com_achados_conta():
@@ -291,7 +301,7 @@ def test_interpret_prompt_leva_o_fato_do_codigo_quando_vazio(tmp_path):
         return "Resposta limpa. PROXIMO_PASSO: verificar manualmente."
 
     def fake_tool(params, **kw):
-        return ToolResult(exit_code=1, stdout="Starting gobuster...\n", stderr="",
+        return ToolResult(exit_code=0, stdout="Starting gobuster...\n", stderr="",
                           duration_ms=1, command="gobuster ...", summary="Starting gobuster...\n")
 
     store = EvidenceStore(tmp_path / "runs" / "inv-fato")
@@ -342,3 +352,74 @@ def test_tripwire_avisa_quando_interpretacao_cita_ref_ausente(tmp_path, capsys):
     rows = store.list("inv-trip")
     hv = json.loads(rows[0][10])
     assert hv.get("refs_missing") == ["/admin-rotas"]
+
+
+# --- interpretacao truncada no marcador PROXIMO_PASSO -------------------------
+
+def test_interpretacao_exibe_so_ate_o_proximo_passo(tmp_path):
+    interp_com_lixo = ("A hipotese foi confirmada. O servico responde com HTML do Juice Shop.\n"
+                       "PROXIMO_PASSO: http_request /api\n"
+                       "we are given the result of an http_request tool on http://localhost:3000.\n"
+                       "So the hypothesis is confirmed and must be verified again. "
+                       "PROXIMO_PASSO: http_request -u /api")
+    vistas = {}
+
+    def fake_ask(endpoint, model, messages, **kwargs):
+        return interp_com_lixo
+
+    def fake_tool(params, **kw):
+        return _http_ok()
+
+    store = EvidenceStore(tmp_path / "runs" / "inv-trunc")
+    with mock.patch.object(loop, "propose_action",
+                           return_value=_proposal("http_request", {"url": "http://localhost:3000/"})), \
+         mock.patch.object(loop, "ask_ollama", side_effect=fake_ask), \
+         mock.patch.object(loop, "TOOLS", {"http_request": fake_tool}), \
+         mock.patch.object(loop, "Prompt") as PromptMock, \
+         mock.patch.object(loop, "Confirm") as ConfirmMock:
+        PromptMock.ask.side_effect = ["y", "confirmed", ""]
+        ConfirmMock.ask.return_value = False
+        loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
+                               "objetivo", "inv-trunc", max_iter=1, runs_dir=tmp_path / "runs")
+
+    hist = json.loads((tmp_path / "runs" / "inv-trunc" / "history.json").read_text(encoding="utf-8"))
+    dh = next(h for h in hist if h.get("tool") == "http_request")
+    assert "we are given" not in dh["interpretation"]
+    assert dh["interpretation"].endswith("PROXIMO_PASSO: http_request /api")
+    assert dh["findings_note"] is None
+
+
+# --- liberacao do modelo sobre params do nmap -------------------------------
+
+def test_executed_key_extra_args_diferenciam_nmap():
+    base = loop.executed_key("nmap", {"target": "localhost"})
+    a = loop.executed_key("nmap", {"target": "localhost", "extra_args": "-sV -p 3000"})
+    b = loop.executed_key("nmap", {"target": "localhost", "extra_args": "-sV -p 80"})
+    alias = loop.executed_key("nmap", {"target": "localhost", "args": "-sV -p 3000"})
+    assert base != a and a != b and a == alias
+
+
+def test_extra_note_da_re_pergunta_ensina_extra_args(tmp_path):
+    notas = []
+    proposals = iter([_proposal("nmap", {"target": "http://localhost:3000"}),
+                      _proposal("nmap", {"target": "http://localhost:3000"}),
+                      _proposal("http_request", {"url": "http://localhost:3000/"}, "h2", "r2")])
+
+    def fake_propose(endpoint, model, history, objective, **kw):
+        notas.append(kw.get("extra_note"))
+        return next(proposals)
+
+    store = EvidenceStore(tmp_path / "runs" / "inv-note")
+    with mock.patch.object(loop, "propose_action", side_effect=fake_propose), \
+         mock.patch.object(loop, "ask_ollama",
+                           return_value="Resposta. PROXIMO_PASSO: http_request /"), \
+         mock.patch.object(loop, "TOOLS", {"nmap": lambda p, **kw: _nmap_ok(),
+                                           "http_request": lambda p, **kw: _http_ok()}), \
+         mock.patch.object(loop, "Prompt") as PromptMock, \
+         mock.patch.object(loop, "Confirm") as ConfirmMock:
+        PromptMock.ask.side_effect = ["y", "confirmed", "", "y", "confirmed", ""]
+        ConfirmMock.ask.side_effect = [True, False]
+        loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
+                               "objetivo", "inv-note", max_iter=3, runs_dir=tmp_path / "runs")
+
+    assert any(n and "extra_args" in n for n in notas)

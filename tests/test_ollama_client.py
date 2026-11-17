@@ -148,6 +148,26 @@ def test_build_propose_messages_destaca_instrucao_humana():
     assert "nao repita nmap" in msgs[1]["content"]
 
 
+def test_instrucao_humana_suprime_intencao_declarada_conflitante():
+    history = [{"tool": "http_request",
+                "params": {"url": "http://localhost:3000"},
+                "next_step": "http_request -u \"http://localhost:3000\" --method GET",
+                "human_instruction": "enumerate diretorios"}]
+    content = oc.build_propose_messages(history, "obj")[1]["content"]
+    assert "Sua intencao declarada" not in content
+    assert "enumerate diretorios" in content
+
+
+def test_instrucao_humana_proibe_repetir_acao_anterior():
+    history = [{"tool": "http_request",
+                "params": {"url": "http://localhost:3000"},
+                "human_instruction": "enumerate diretorios"}]
+    content = oc.build_propose_messages(history, "obj")[1]["content"]
+    assert "PROIBIDO" in content
+    assert "http_request" in content
+    assert "http://localhost:3000" in content
+
+
 def test_system_prompt_inclui_cards_de_ferramentas():
     for tool in ("nmap", "http_request", "gobuster", "wfuzz"):
         assert tool in oc.SYSTEM_PROMPT
@@ -197,3 +217,57 @@ def test_find_missing_refs():
     refs = ["/admin", "/naoexiste"]
     missing = oc.find_missing_refs(refs, "Gobuster v3 Starting...\n/admin (Status: 200)")
     assert missing == ["/naoexiste"]
+
+
+# --- truncate_at_next_step: corta tudo depois da 1a linha PROXIMO_PASSO ------
+
+def test_truncate_at_next_step_corta_rambling_pos_resposta():
+    raw = ("A hipotese foi confirmada. O servico responde com HTML do Juice Shop.\n"
+           "PROXIMO_PASSO: http_request /api\n"
+           "we are given the result of an http_request tool on http://localhost:3000.\n"
+           "So the hypothesis is confirmed. PROXIMO_PASSO: http_request -u /api")
+    out = oc.truncate_at_next_step(raw)
+    assert out.endswith("PROXIMO_PASSO: http_request /api")
+    assert "we are given" not in out
+    assert out.count("PROXIMO_PASSO") == 1
+
+
+def test_truncate_at_next_step_sem_marcador_retorna_inalterado():
+    raw = "Resposta sem marcador nenhum\nsegunda linha"
+    assert oc.truncate_at_next_step(raw) == raw
+
+
+def test_truncate_at_next_step_marcador_inline_na_mesma_linha():
+    raw = "Confirmado. PROXIMO_PASSO: nmap -p- 127.0.0.1\nlixo depois que nao deve ficar"
+    out = oc.truncate_at_next_step(raw)
+    assert out == "Confirmado. PROXIMO_PASSO: nmap -p- 127.0.0.1"
+
+
+# --- build_history_digest: historico compacto, sem corte no meio do JSON ------
+
+def test_propose_messages_mantem_ultima_entrada_e_nao_vaza_fingerprint():
+    sf = "SF:" + "A" * 800
+    history = [
+        {"tool": "nmap", "params": {"target": "http://localhost:3000"},
+         "result_summary": "portas abertas: 3000\n" + sf,
+         "interpretation": "porta 3000 aberta, servico ppp?"},
+        {"tool": "nmap", "params": {"target": "localhost", "extra_args": "-sV -p 3000"},
+         "result_summary": "PORT STATE SERVICE\n3000/tcp open ppp?\n" + sf,
+         "interpretation": "fingerprint com HTTP 200"},
+        {"tool": "http_request", "params": {"url": "http://localhost:3000"},
+         "result_summary": "status=200 body Juice Shop",
+         "interpretation": "Juice Shop confirmado na 3000",
+         "human_instruction": "enumerate diretorios"},
+    ]
+    content = oc.build_propose_messages(history, "obj")[1]["content"]
+    # a entrada mais recente nao pode sumir do prompt por truncamento
+    assert "status=200" in content
+    assert "enumerate diretorios" in content
+    # blob de fingerprint nmap nao deve ocupar o contexto
+    assert "SF:" + "A" * 100 not in content
+
+
+def test_system_prompt_ensina_extra_args_para_nmap_livre():
+    assert "extra_args" in oc.SYSTEM_PROMPT
+    assert "NAO passe extra_args" not in oc.SYSTEM_PROMPT
+    assert "-sV -p 3000" in oc.SYSTEM_PROMPT

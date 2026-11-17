@@ -22,6 +22,14 @@ def test_run_cmd_binario_inexistente():
     assert "binario nao encontrado" in r.summary
 
 
+def test_run_cmd_summary_inclui_stderr_mesmo_com_stdout():
+    r = run_cmd([sys.executable, "-c",
+                 "import sys; print('banner'); sys.stderr.write('falhou: wildcard')"],
+                timeout=10)
+    assert "banner" in r.summary
+    assert "falhou: wildcard" in r.summary
+
+
 def test_run_cmd_executa_lista_nunca_shell():
     r = run_cmd([sys.executable, "-c", "import os; print(os.getpid() > 0)"], timeout=10)
     assert r.exit_code == 0

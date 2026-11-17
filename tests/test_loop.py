@@ -52,6 +52,15 @@ def test_build_evidence_item_estrutura():
     assert item["result"]["summary"] == "summ"
 
 
+def test_build_evidence_item_persiste_stderr_e_duration():
+    res = ToolResult(exit_code=1, stdout="banner", stderr="wildcard abort",
+                     duration_ms=42, command="cmd", summary="summ")
+    decision = mock.Mock(model_dump=lambda: {"action": "approved", "final_params": {}})
+    item = loop.build_evidence_item("inv", 0, _proposal(), decision, res, "interp", "inconclusive")
+    assert item["result"]["stderr"] == "wildcard abort"
+    assert item["result"]["duration_ms"] == 42
+
+
 def _run_one_iteration(tmp_path, fake_tool_fn, tool="http_request", params=None):
     store = EvidenceStore(tmp_path / "runs" / "inv-test")
     with mock.patch.object(loop, "propose_action",
