@@ -71,9 +71,9 @@ def test_repeticao_identica_nao_executa_e_re_pergunta(tmp_path):
          mock.patch.object(loop, "ask_ollama", return_value="interp"), \
          mock.patch.object(loop, "TOOLS", {"nmap": fake_tool, "http_request": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", "", "y", "confirmed", ""]
-        ConfirmMock.ask.side_effect = [True, False]
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", "", "s", "confirmado", ""]
+        SimNaoMock.side_effect = [True, False, False]
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-stag", max_iter=5, runs_dir=tmp_path / "runs")
 
@@ -110,8 +110,8 @@ def test_conclude_encerra_sem_executar_e_grava_evidencia(tmp_path):
          mock.patch.object(loop, "ask_ollama", return_value="interp"), \
          mock.patch.object(loop, "TOOLS", {"http_request": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        ConfirmMock.ask.return_value = True  # confirma encerramento
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        SimNaoMock.return_value = True  # confirma encerramento
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-conc", max_iter=5, runs_dir=tmp_path / "runs")
 
@@ -130,9 +130,9 @@ def test_conclude_recusado_continua_a_investigacao(tmp_path):
          mock.patch.object(loop, "ask_ollama", return_value="interp"), \
          mock.patch.object(loop, "TOOLS", {"http_request": lambda p, **kw: _http_ok()}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", ""]
-        ConfirmMock.ask.side_effect = [False, False]  # recusa encerrar; depois recusa continuar
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.side_effect = [False, False, False]  # recusa encerrar; depois recusa continuar
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-conc2", max_iter=5, runs_dir=tmp_path / "runs")
 
@@ -151,15 +151,15 @@ def test_veredito_aceita_instrucao_e_grava_na_evidencia(tmp_path):
          mock.patch.object(loop, "ask_ollama", return_value="interp"), \
          mock.patch.object(loop, "TOOLS", {"http_request": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", "nao repita nmap, va de curl"]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", "nao repita nmap, va de curl"]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-instr", max_iter=1, runs_dir=tmp_path / "runs")
 
     rows = store.list("inv-instr")
     hv = json.loads(rows[0][10])
-    assert hv["verdict"] == "confirmed"
+    assert hv["verdict"] == "confirmado"
     assert hv["instruction"] == "nao repita nmap, va de curl"
 
 
@@ -173,9 +173,9 @@ def test_historico_carrega_instrucao_humana(tmp_path):
          mock.patch.object(loop, "ask_ollama", return_value="interp"), \
          mock.patch.object(loop, "TOOLS", {"http_request": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "refuted", "troque por gobuster"]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "refutado", "troque por gobuster"]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-instr2", max_iter=1, runs_dir=tmp_path / "runs")
 
@@ -202,9 +202,9 @@ def test_aviso_de_divergencia_quando_proposta_contraria_intencao(tmp_path, capsy
          mock.patch.object(loop, "ask_ollama", return_value=interp), \
          mock.patch.object(loop, "TOOLS", {"nmap": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", "", "y", "confirmed", ""]
-        ConfirmMock.ask.side_effect = [True, False]
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", "", "s", "confirmado", ""]
+        SimNaoMock.side_effect = [True, False, False]
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-div", max_iter=5, runs_dir=tmp_path / "runs")
 
@@ -231,9 +231,9 @@ def test_interpretacao_usa_prefill_de_assistant(tmp_path):
          mock.patch.object(loop, "ask_ollama", side_effect=fake_ask), \
          mock.patch.object(loop, "TOOLS", {"http_request": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", ""]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-prefill", max_iter=1, runs_dir=tmp_path / "runs")
 
@@ -258,9 +258,9 @@ def test_interpretacao_envia_stop_para_cortar_fake_turno(tmp_path):
          mock.patch.object(loop, "ask_ollama", side_effect=fake_ask), \
          mock.patch.object(loop, "TOOLS", {"http_request": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", ""]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-stop", max_iter=1, runs_dir=tmp_path / "runs")
 
@@ -310,9 +310,9 @@ def test_interpret_prompt_leva_o_fato_do_codigo_quando_vazio(tmp_path):
          mock.patch.object(loop, "ask_ollama", side_effect=fake_ask), \
          mock.patch.object(loop, "TOOLS", {"gobuster": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "inconclusive", ""]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "inconclusivo", ""]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-fato", max_iter=1, runs_dir=tmp_path / "runs")
 
@@ -339,9 +339,9 @@ def test_tripwire_avisa_quando_interpretacao_cita_ref_ausente(tmp_path, capsys):
          mock.patch.object(loop, "ask_ollama", return_value=interp), \
          mock.patch.object(loop, "TOOLS", {"gobuster": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", ""]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-trip", max_iter=1, runs_dir=tmp_path / "runs")
 
@@ -376,9 +376,9 @@ def test_interpretacao_exibe_so_ate_o_proximo_passo(tmp_path):
          mock.patch.object(loop, "ask_ollama", side_effect=fake_ask), \
          mock.patch.object(loop, "TOOLS", {"http_request": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", ""]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-trunc", max_iter=1, runs_dir=tmp_path / "runs")
 
@@ -416,9 +416,9 @@ def test_extra_note_da_re_pergunta_ensina_extra_args(tmp_path):
          mock.patch.object(loop, "TOOLS", {"nmap": lambda p, **kw: _nmap_ok(),
                                            "http_request": lambda p, **kw: _http_ok()}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", "", "y", "confirmed", ""]
-        ConfirmMock.ask.side_effect = [True, False]
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", "", "s", "confirmado", ""]
+        SimNaoMock.side_effect = [True, False, False]
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-note", max_iter=3, runs_dir=tmp_path / "runs")
 

@@ -7,16 +7,19 @@ from pydantic import BaseModel, Field
 
 
 class ActionProposal(BaseModel):
-    tool: Literal["nmap", "http_request", "gobuster", "wfuzz", "conclude"]
+    tool: Literal["nmap", "http_request", "gobuster", "wfuzz", "wapiti", "nikto", "conclude"]
     params: dict
     hypothesis: str
     rationale: str
     risk: str = "baixo"
     expected_evidence: str = ""
+    # flags declaradas pelo LLM (saneadas pelo codigo contra phases.FLAG_NAMES) e aprovadas pelo humano
+    flags: list[str] = Field(default_factory=list)
+    fase_sugerida: int | None = None
 
 
 class HumanDecision(BaseModel):
-    action: Literal["approved", "modified", "rejected"]
+    action: Literal["approved", "modified", "rejected", "skipped"]
     final_params: dict | None = None
     note: str = ""
 

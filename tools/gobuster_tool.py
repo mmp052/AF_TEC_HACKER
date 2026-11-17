@@ -13,6 +13,7 @@ DOCKER_IMAGE = "mdiqib/gobuster:latest"
 # sem --no-error: o stderr e necessario (wildcard do SPA) e agora vai para a evidencia
 FLAGS = ("-k", "-t", "20")
 _WILDCARD_RE = re.compile(r"Length:\s*([0-9]+(?:-[0-9]+)?)")
+_EXCLUDE_LEN_RE = re.compile(r"^[0-9]+(-[0-9]+)?$")
 
 
 def resolve_wordlist(wordlist_rel: str) -> Path:
@@ -42,8 +43,12 @@ def run_gobuster(params: dict, timeout: int = 120,
     wordlist = params.get("wordlist", "")
     validate_url(url, allowed_hosts or ALLOWED_HOSTS)
     resolve_wordlist(wordlist)  # valida existencia; routing escolhe o arquivo
+    exclude = str(params.get("exclude_length") or "").strip()
+    if exclude and not _EXCLUDE_LEN_RE.match(exclude):
+        raise ValueError(f"exclude_length invalido: {exclude!r}")
 
-    cmd = build_gobuster_command(url, wordlist, not has_binary("gobuster"))
+    cmd = build_gobuster_command(url, wordlist, not has_binary("gobuster"),
+                                 exclude_length=exclude or None)
     r = run_cmd(cmd, timeout)
     if r.exit_code != 0:
         m = _WILDCARD_RE.search(r.stderr or "")

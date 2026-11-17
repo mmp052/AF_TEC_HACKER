@@ -4,7 +4,7 @@ from pydantic import ValidationError
 from agent_schemas import ActionProposal, HumanDecision, ToolResult
 
 
-@pytest.mark.parametrize("tool", ["nmap", "http_request", "gobuster", "wfuzz"])
+@pytest.mark.parametrize("tool", ["nmap", "http_request", "gobuster", "wfuzz", "wapiti", "nikto"])
 def test_action_proposal_tool_valida(tool):
     p = ActionProposal(tool=tool, params={}, hypothesis="h", rationale="r")
     assert p.tool == tool

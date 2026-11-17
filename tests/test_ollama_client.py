@@ -169,7 +169,7 @@ def test_instrucao_humana_proibe_repetir_acao_anterior():
 
 
 def test_system_prompt_inclui_cards_de_ferramentas():
-    for tool in ("nmap", "http_request", "gobuster", "wfuzz"):
+    for tool in ("nmap", "http_request", "gobuster", "wfuzz", "wapiti", "nikto"):
         assert tool in oc.SYSTEM_PROMPT
     assert "conclude" in oc.SYSTEM_PROMPT
 
@@ -183,6 +183,8 @@ def test_expected_tool_from_text():
     assert oc.expected_tool_from_text("rodar curl na porta 3000") == "http_request"
     assert oc.expected_tool_from_text("varrer com nmap -sV") == "nmap"
     assert oc.expected_tool_from_text("achar diretorios ocultos com gobuster") == "gobuster"
+    assert oc.expected_tool_from_text("rodar wapiti contra a aplicacao") == "wapiti"
+    assert oc.expected_tool_from_text("scan de servidor com nikto") == "nikto"
     assert oc.expected_tool_from_text("fuzzing de parametro com wfuzz") == "wfuzz"
     assert oc.expected_tool_from_text("pense sobre o problema") is None
 
@@ -211,6 +213,13 @@ def test_extract_refs_filtro_de_falsos_positivos_menores():
     # /tcp de '22/tcp open' nao e caminho de app — filtrado
     assert oc.extract_refs("portas 22/tcp e 80/tcp") == []
     assert oc.extract_refs("nao ha caminhos") == []
+
+
+def test_find_missing_refs_case_insensitive():
+    # interpretacao pode citar /REST/Admin enquanto a saida tem /rest/admin
+    refs = ["/REST/Admin", "/Metrics"]
+    missing = oc.find_missing_refs(refs, "200 /rest/admin\n/metrics 200")
+    assert missing == []
 
 
 def test_find_missing_refs():

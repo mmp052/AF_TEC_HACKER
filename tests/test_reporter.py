@@ -30,7 +30,8 @@ def test_render_markdown_contem_hipotese_e_veredito(tmp_path):
     md = reporter.render_markdown("report-fixture", rows)
     assert "# Investigacao: report-fixture" in md
     assert "ha rotas ocultas" in md
-    assert "confirmed" in md
+    # fixture legada com veredito EN: leitura normaliza para PT
+    assert "confirmado" in md
     assert "gobuster dir" in md
 
 

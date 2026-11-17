@@ -13,6 +13,26 @@ from evidence_store import EvidenceStore
 
 # --- funcoes puras ---------------------------------------------------------
 
+_VEREDITO_LEGACY = {
+    "confirmed": "confirmado",
+    "refuted": "refutado",
+    "inconclusive": "inconclusivo",
+    "rejected": "rejeitado",
+    "concluded": "concluido",
+    "skipped": "pulado",
+}
+
+
+def normalizar_veredito(v) -> str:
+    """Normaliza vereditos legados (EN) para PT-BR sem acento.
+
+    O evidence.db eh append-only (nao reescrevemos historico); quem le
+    interpreta os dois dumps. Escrita nova sempre em PT.
+    """
+    s = str(v or "").strip().lower()
+    return _VEREDITO_LEGACY.get(s, s or "inconclusivo")
+
+
 def _row_fields(row):
     _id, _ts, _inv, hip, prop, dec, tool, cmd, res, interp, valid = row
     try:
@@ -30,7 +50,7 @@ def render_markdown(investigation_id: str, rows: list[tuple]) -> str:
     for idx, row in enumerate(rows):
         _id, hip, p, d, tool, cmd, r, interp, v = _row_fields(row)
         lines.append(f"| {idx+1} | {tool} | {hip[:80].replace('|', ' ')} | "
-                     f"{d.get('action', '')} | {v.get('verdict', '')} |")
+                     f"{d.get('action', '')} | {normalizar_veredito(v.get('verdict'))} |")
     lines.append("\n## Detalhes")
     for row in rows:
         _id, hip, p, d, tool, cmd, r, interp, v = _row_fields(row)
@@ -41,7 +61,7 @@ def render_markdown(investigation_id: str, rows: list[tuple]) -> str:
         lines.append(f"- **Comando:** `{cmd}`")
         lines.append(f"- **Resultado (resumo):**\n```\n{r.get('summary', '')[:1000]}\n```")
         lines.append(f"- **Interpretacao LLM:** {interp}")
-        lines.append(f"- **Veredito humano:** {v.get('verdict', '')}")
+        lines.append(f"- **Veredito humano:** {normalizar_veredito(v.get('verdict'))}")
     return "\n".join(lines)
 
 
@@ -55,7 +75,7 @@ def build_summary_table(investigation_id: str, rows: list[tuple]) -> Table:
     for idx, row in enumerate(rows):
         _id, hip, p, d, tool, cmd, r, interp, v = _row_fields(row)
         table.add_row(str(idx + 1), tool, hip[:60],
-                      d.get("action", ""), v.get("verdict", ""))
+                      d.get("action", ""), normalizar_veredito(v.get("verdict")))
     return table
 
 

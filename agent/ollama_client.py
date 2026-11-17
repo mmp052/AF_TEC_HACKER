@@ -6,13 +6,14 @@ import re
 
 import httpx
 
+from agent.phases import phase_prompt_block
 from agent_schemas import ActionProposal
 from llm_io_log import append_llm_io
 
 
 SYSTEM_PROMPT = """Voce e um assistente de testes de seguranca supervisionados.
 Alvo permitido: http://localhost:3000 ou http://127.0.0.1:3000 ou http://juice-shop:3000.
-Ferramentas permitidas: nmap, http_request, gobuster, wfuzz, conclude.
+Ferramentas permitidas: nmap, http_request, gobuster, wfuzz, wapiti, nikto, conclude.
 
 Como usar cada ferramenta (cards):
 
@@ -35,9 +36,26 @@ Ferramenta: wfuzz
 - params: {"url": "http://localhost:3000/busca?q=FUZZ"} — FUZZ marca o ponto de injecao. Wordlist automatica, NAO informe.
 - Bom para fuzzing de parametros (SQLi/XSS/LFI) depois de achar uma entrada.
 
+Ferramenta: wapiti
+- params: {"url": "http://localhost:3000"} — scan de VULNERABILIDADES web (sqli, xss, file, ssrf, ...), nao de rotas.
+- Voce PODE escolher os modulos em "modules" (ex.: ["sql", "xss"]); sem ele, o wapiti roda os modulos default.
+- Outros params opcionais (com faixas validadas no codigo): scope (url|page|folder), level (1-4), depth (1-5), max_scan_time, max_attack_time, max_parameters, tasks, timeout, data (POST).
+- Pode levar MINUTOS contra a aplicacao inteira; o humano aprova antes e o relatorio completo fica na evidencia.
+
+Ferramenta: nikto
+- params: {"url": "http://localhost:3000"} — scan de SERVIDOR/cabecalhos/arquivos default (nao de rotas nem de logica de app).
+- Tuning opcional em "tuning" (combinacao de 1-9,0,a-e,x; ex.: "9" so SQLi, "4" so XSS, "x9" tudo exceto SQLi). Sem o param, roda todos os testes.
+- maxtime (segundos, padrao 300, faixa 30-900) e timeout por requisicao (1-30) tambem aceitos.
+- Complementa o wapiti: nikto = configuracao/cabecalhos/arquivos conhecidos; wapiti = vulnerabilidades da aplicacao. Pode levar MINUTOS; o humano aprova antes.
+
 Ferramenta: conclude
 - params: {} — quando a evidencia ja responde ao objetivo; escreva resumo final em hypothesis e rationale.
 - Nao use conclude cedo demais: o humano aprova cada passo.
+
+Como decidir o proximo passo (adapte ao OBJETIVO — nao sirva so a recon):
+- Confirme algo simples antes de lancar uma ferramenta cara (ex.: http_request antes de wapiti).
+- Aproxime do objetivo: superficie/rotas -> gobuster; parametros/injecao -> wfuzz; vulnerabilidades -> wapiti; servidor/cabecalhos/arquivos default -> nikto.
+- Se a evidencia ja responde ao objetivo, proponha `conclude` com um resumo — nao repita acoes identicas nem estique o escopo.
 
 Regras:
 - Responda APENAS JSON valido (sem texto extra, sem markdown).
@@ -62,6 +80,8 @@ _TOOL_KEYWORDS = [
     ("http_request", re.compile(r"\b(curl|httpx|http_request|request)\b", re.IGNORECASE)),
     ("gobuster", re.compile(r"\b(gobuster|diret\w*)\b", re.IGNORECASE)),
     ("wfuzz", re.compile(r"\b(wfuzz|fuzz)\b", re.IGNORECASE)),
+    ("wapiti", re.compile(r"\bwapiti\b", re.IGNORECASE)),
+    ("nikto", re.compile(r"\bnikto\b", re.IGNORECASE)),
 ]
 
 
@@ -156,8 +176,10 @@ def build_history_digest(history: list[dict], max_entries: int = 5,
 
 
 def build_propose_messages(history: list[dict], objective: str, reforco: bool = False,
-                             extra_note: str | None = None) -> list[dict]:
-    user = f"Objetivo: {objective}\n\nHistorico recente (resumido):\n" + build_history_digest(history)
+                             extra_note: str | None = None,
+                             fase: int = 1, flags: list[str] | None = None) -> list[dict]:
+    user = (phase_prompt_block(fase, flags or []) +
+            f"\nObjetivo: {objective}\n\nHistorico recente (resumido):\n" + build_history_digest(history))
     if reforco:
         user += "\nATENCAO: responda APENAS JSON, sem markdown, sem texto antes/depois."
     if extra_note:
@@ -203,14 +225,16 @@ def ask_ollama(endpoint: str, model: str, messages: list[dict],
 def propose_action(endpoint: str, model: str, history: list[dict],
                   objective: str, num_ctx: int = 4096,
                   runs_dir=None, investigation_id=None,
-                  extra_note: str | None = None) -> ActionProposal:
-    msgs = build_propose_messages(history, objective, extra_note=extra_note)
+                  extra_note: str | None = None,
+                  fase: int = 1, flags: list[str] | None = None) -> ActionProposal:
+    msgs = build_propose_messages(history, objective, extra_note=extra_note, fase=fase, flags=flags)
 
     def _log(stage: str, msgs_, raw_: str) -> None:
         if runs_dir and investigation_id:
             append_llm_io(runs_dir, investigation_id,
                           {"stage": stage, "model": model, "endpoint": endpoint,
-                           "objective": objective, "messages": msgs_,
+                           "objective": objective, "fase": fase, "flags": flags or [],
+                           "messages": msgs_,
                            "raw_response": raw_})
 
     raw = ask_ollama(endpoint, model, msgs, num_ctx=num_ctx)
@@ -219,7 +243,7 @@ def propose_action(endpoint: str, model: str, history: list[dict],
         return parse_action(strip_think(raw))
     except Exception:
         # retry 1x com reforco
-        msgs = build_propose_messages(history, objective, reforco=True)
+        msgs = build_propose_messages(history, objective, reforco=True, fase=fase, flags=flags)
         raw2 = ask_ollama(endpoint, model, msgs, num_ctx=num_ctx)
         _log("propose_retry", msgs, raw2)
         return parse_action(strip_think(raw2))
@@ -258,8 +282,8 @@ def extract_refs(text: str | None) -> list[str]:
 
 
 def find_missing_refs(refs: list[str], haystack: str | None) -> list[str]:
-    hay = str(haystack or "")
-    return [r for r in refs if r not in hay]
+    hay = str(haystack or "").lower()
+    return [r for r in refs if r.lower() not in hay]
 
 
 def truncate_at_next_step(text: str | None) -> str:

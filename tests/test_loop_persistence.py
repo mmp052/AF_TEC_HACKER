@@ -76,9 +76,9 @@ def test_run_investigation_grava_llm_io_mesmo_se_usuario_interpretar(tmp_path, c
          mock.patch.object(loop, "ask_ollama", return_value="interpretacao"), \
          mock.patch.object(loop, "TOOLS", {"http_request": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", ""]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-io", max_iter=1,
                                runs_dir=tmp_path / "runs")

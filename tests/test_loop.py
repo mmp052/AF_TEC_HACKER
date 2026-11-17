@@ -44,11 +44,11 @@ def test_build_evidence_item_estrutura():
     res = ToolResult(exit_code=0, stdout="out", stderr="", duration_ms=5,
                      command="cmd", summary="summ")
     decision = mock.Mock(model_dump=lambda: {"action": "approved", "final_params": {}})
-    item = loop.build_evidence_item("inv", 0, _proposal(), decision, res, "interp", "confirmed")
+    item = loop.build_evidence_item("inv", 0, _proposal(), decision, res, "interp", "confirmado")
     assert item["id"] == "inv-000"
     assert item["investigation_id"] == "inv"
     assert item["tool"] == "http_request"
-    assert item["human_validation"]["verdict"] == "confirmed"
+    assert item["human_validation"]["verdict"] == "confirmado"
     assert item["result"]["summary"] == "summ"
 
 
@@ -56,7 +56,7 @@ def test_build_evidence_item_persiste_stderr_e_duration():
     res = ToolResult(exit_code=1, stdout="banner", stderr="wildcard abort",
                      duration_ms=42, command="cmd", summary="summ")
     decision = mock.Mock(model_dump=lambda: {"action": "approved", "final_params": {}})
-    item = loop.build_evidence_item("inv", 0, _proposal(), decision, res, "interp", "inconclusive")
+    item = loop.build_evidence_item("inv", 0, _proposal(), decision, res, "interp", "inconclusivo")
     assert item["result"]["stderr"] == "wildcard abort"
     assert item["result"]["duration_ms"] == 42
 
@@ -68,13 +68,59 @@ def _run_one_iteration(tmp_path, fake_tool_fn, tool="http_request", params=None)
          mock.patch.object(loop, "ask_ollama", return_value="interpretacao"), \
          mock.patch.object(loop, "TOOLS", {tool: fake_tool_fn}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", ""]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-test", max_iter=1,
                                runs_dir=tmp_path / "runs")
     return store
+
+
+def test_final_oferece_relatorio_owasp_e_grava_quando_confirmado(tmp_path):
+    def fake_tool(params, **kwargs):
+        return ToolResult(exit_code=0, stdout="/admin (Status: 200)", stderr="", duration_ms=3,
+                          command="gobuster dir -u http://localhost:3000 -w wl",
+                          summary="/admin (Status: 200)")
+
+    store = EvidenceStore(tmp_path / "runs" / "inv-rep")
+    with mock.patch.object(loop, "propose_action",
+                           return_value=_proposal("gobuster", {"url": "http://localhost:3000"})), \
+         mock.patch.object(loop, "ask_ollama", return_value="interp"), \
+         mock.patch.object(loop, "TOOLS", {"gobuster": fake_tool}), \
+         mock.patch.object(loop, "Prompt") as PromptMock, \
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.side_effect = [False, True]  # continuar? nao; gerar relatorio? sim
+        loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
+                               "objetivo", "inv-rep", max_iter=1, runs_dir=tmp_path / "runs")
+
+    out = tmp_path / "runs" / "inv-rep" / "owasp_report.md"
+    assert out.exists()
+    txt = out.read_text(encoding="utf-8")
+    assert "WSTG" in txt
+    assert "/admin (Status: 200)" in txt
+
+
+def test_final_recusa_relatorio_owasp_nao_grava(tmp_path):
+    def fake_tool(params, **kwargs):
+        return ToolResult(exit_code=0, stdout="/admin (Status: 200)", stderr="", duration_ms=3,
+                          command="gobuster dir -u http://localhost:3000 -w wl",
+                          summary="/admin (Status: 200)")
+
+    store = EvidenceStore(tmp_path / "runs" / "inv-rep-no")
+    with mock.patch.object(loop, "propose_action",
+                           return_value=_proposal("gobuster", {"url": "http://localhost:3000"})), \
+         mock.patch.object(loop, "ask_ollama", return_value="interp"), \
+         mock.patch.object(loop, "TOOLS", {"gobuster": fake_tool}), \
+         mock.patch.object(loop, "Prompt") as PromptMock, \
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.side_effect = [False, False]  # nao continuar; gerar? nao
+        loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
+                               "objetivo", "inv-rep-no", max_iter=1, runs_dir=tmp_path / "runs")
+
+    assert not (tmp_path / "runs" / "inv-rep-no" / "owasp_report.md").exists()
 
 
 def test_run_investigation_http_request_registra_evidencia(tmp_path):
@@ -124,9 +170,9 @@ def test_interpret_nao_forca_json(tmp_path):
          mock.patch.object(loop, "ask_ollama", side_effect=fake_ask), \
          mock.patch.object(loop, "TOOLS", {"http_request": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", ""]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-fmt", max_iter=1, runs_dir=tmp_path / "runs")
     assert chamado.get("format_json") is False
@@ -146,9 +192,9 @@ def test_interpretacao_impressa_sem_bloco_think(tmp_path, capsys):
          mock.patch.object(loop, "ask_ollama", side_effect=fake_ask), \
          mock.patch.object(loop, "TOOLS", {"http_request": fake_tool}), \
          mock.patch.object(loop, "Prompt") as PromptMock, \
-         mock.patch.object(loop, "Confirm") as ConfirmMock:
-        PromptMock.ask.side_effect = ["y", "confirmed", ""]
-        ConfirmMock.ask.return_value = False
+         mock.patch.object(loop, "_sim_nao") as SimNaoMock:
+        PromptMock.ask.side_effect = ["s", "confirmado", ""]
+        SimNaoMock.return_value = False
         loop.run_investigation(store, "http://localhost:11434/api/chat", "qwen3:4b",
                                "objetivo", "inv-think", max_iter=1, runs_dir=tmp_path / "runs")
     out = capsys.readouterr().out

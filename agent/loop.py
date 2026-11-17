@@ -1,4 +1,10 @@
-"""Loop supervisionado: LLM propoe -> humano decide -> executa -> volta pro LLM."""
+"""Loop supervisionado: LLM propoe -> humano decide -> executa -> volta pro LLM.
+
+Fases OWASP (agent/phases.py): cada iteracao sabe em que fase esta (0 parceria,
+1 reconhecimento, 2 enumeracao/config, 3 validacao de vulnerabilidades,
+4 encerramento/relatorio). Flags sao declaradas pelo LLM, saneadas pelo codigo
+e aprovadas pelo humano no painel. Fora da fase = painel amarelo, o humano decide.
+"""
 from __future__ import annotations
 
 import json
@@ -8,18 +14,24 @@ from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Prompt
 
 from agent.ollama_client import (ask_ollama, extract_next_step, expected_tool_from_text,
                              extract_refs, find_missing_refs, propose_action,
                              strip_think, truncate_at_next_step)
+from agent.phases import (phase, sanitize_flags, merge_flags, phase_header,
+                          fase_inicial_from_knowledge)
 from agent_schemas import HumanDecision, ToolResult
 from evidence_store import EvidenceStore
 from llm_io_log import append_llm_io
+from owasp_report import write_owasp_report
 from routing.wordlist import choose_wordlist, describe_choice
+from tools.cmdparse import parse_command, preview_command
 from tools.gobuster_tool import run_gobuster
 from tools.http_tool import run_http
 from tools.nmap_tool import run_nmap, normalize_target, get_extra_args, parse_extra_args
+from tools.nikto_tool import run_nikto
+from tools.wapiti_tool import run_wapiti
 from tools.wfuzz_tool import run_wfuzz
 
 console = Console()
@@ -29,7 +41,18 @@ TOOLS = {
     "http_request": run_http,
     "gobuster": run_gobuster,
     "wfuzz": run_wfuzz,
+    "wapiti": run_wapiti,
+    "nikto": run_nikto,
 }
+
+_VEREDITO_REGRA = (
+    "confirmado  = voce leu a saida bruta e a evidencia verifica a hipotese "
+    "(ex.: /admin listado com Status 200)\n"
+    "refutado    = a saida contradiz a hipotese com evidencia positiva "
+    "(ausencia de achados NAO refuta)\n"
+    "inconclusivo= faltou evidencia para os dois lados (tool falhou, saida parcial, "
+    "sem conviccao na saida) — na duvida, SEMPRE inconclusivo"
+)
 
 
 # --- funcoes puras ---------------------------------------------------------
@@ -48,7 +71,8 @@ def inject_wordlist(proposal, history):
 
 def build_evidence_item(investigation_id: str, i: int, proposal, decision,
                         result, interpretation: str, verdict: str,
-                        instruction: str = "", refs_missing: list[str] | None = None) -> dict:
+                        instruction: str = "", refs_missing: list[str] | None = None,
+                        fase: int | None = None) -> dict:
     return {
         "id": f"{investigation_id}-{i:03d}",
         "investigation_id": investigation_id,
@@ -63,6 +87,7 @@ def build_evidence_item(investigation_id: str, i: int, proposal, decision,
         "llm_interpretation": interpretation,
         "human_validation": {"verdict": verdict, "instruction": instruction or None,
                              "refs_missing": refs_missing or []},
+        "fase": fase,
     }
 
 
@@ -104,51 +129,86 @@ def executed_key(tool: str, params: dict) -> str:
     return tool + "|" + json.dumps(rest, sort_keys=True, ensure_ascii=False, default=str)
 
 
-def _human_decide(proposal) -> HumanDecision:
-    console.print(Panel(
-        f"tool: {proposal.tool}\nparams: {json.dumps(proposal.params, indent=2, ensure_ascii=False)}\n"
-        f"hipotese: {proposal.hypothesis}\nrationale: {proposal.rationale}\n"
+def _sim_nao(prompt: str, default: bool = True) -> bool:
+    """Confirmacao em PT-BR: s/n (no lugar de y/n/yes/no do rich)."""
+    return Prompt.ask(f"{prompt} (s/n)", choices=["s", "n"],
+                      default="s" if default else "n") == "s"
+
+
+def _human_decide(proposal, fase: int) -> HumanDecision:
+    preview = preview_command(proposal.tool, proposal.params)
+    flags_props, flags_desc = sanitize_flags(getattr(proposal, "flags", None))
+    corpo = [
+        f"tool: {proposal.tool}",
+        f"params: {json.dumps(proposal.params, indent=2, ensure_ascii=False)}",
+        f"comando: {preview}",
+        f"hipotese: {proposal.hypothesis}",
+        f"rationale: {proposal.rationale}",
         f"evidencia esperada: {proposal.expected_evidence}",
-        title="Proposta do LLM",
-        border_style="cyan",
-    ))
-    choice = Prompt.ask("Autorizar?", choices=["y", "n", "edit", "skip"], default="y")
-    if choice in ("y",):
+        f"fase: {phase_header(fase)}",
+    ]
+    if flags_props:
+        corpo.append("flags propostas: " + ", ".join(flags_props))
+    if flags_desc:
+        corpo.append("flags desconhecidas (ignoradas): " + ", ".join(flags_desc))
+    console.print(Panel("\n".join(corpo), title="Proposta do LLM", border_style="cyan"))
+    choice = Prompt.ask("Autorizar?", choices=["s", "n", "pular", "editar"], default="s")
+    if choice == "s":
         return HumanDecision(action="approved", final_params=proposal.params)
-    if choice == "skip" or choice == "n":
+    if choice == "pular":
+        return HumanDecision(action="skipped", final_params=None, note="passo pulado pelo humano")
+    if choice == "n":
         return HumanDecision(action="rejected", final_params=None, note="humano rejeitou")
-    # edit
-    edited_str = Prompt.ask("Novo params JSON")
-    try:
-        edited = json.loads(edited_str)
-    except json.JSONDecodeError:
-        edited = proposal.params
-    if proposal.tool in ("gobuster", "wfuzz") and proposal.params.get("wordlist"):
-        edited.setdefault("wordlist", proposal.params["wordlist"])  # mantem escolha por evidencia
-    return HumanDecision(action="modified", final_params=edited, note="editado pelo humano")
+    # editar: humano digita o comando que quer rodar
+    while True:
+        console.print(f"[dim]comando atual: {preview}[/]")
+        text = Prompt.ask("comando>", default="").strip()
+        if not text:
+            return _human_decide(proposal, fase)  # Enter vazio: volta ao menu
+        try:
+            edited = parse_command(proposal.tool, text)
+        except ValueError as e:
+            console.print(f"[red]Erro: {e}[/]")
+            if not _sim_nao("Tentar de novo?", default=True):
+                return _human_decide(proposal, fase)
+            continue
+        console.print(f"Entendi: {json.dumps(edited, ensure_ascii=False)}")
+        if _sim_nao("Rodar este comando?", default=True):
+            if proposal.tool in ("gobuster", "wfuzz") and proposal.params.get("wordlist"):
+                edited.setdefault("wordlist", proposal.params["wordlist"])  # mantem escolha por evidencia
+            return HumanDecision(action="modified", final_params=edited,
+                                 note=f"comando digitado: {text}")
+        # nao confirmou: volta ao menu
+        return _human_decide(proposal, fase)
 
 
 def run_investigation(store: EvidenceStore, endpoint: str, model: str,
                       objective: str, investigation_id: str,
                       max_iter: int = 20,
                       allowed_hosts: set[str] | None = None,
-                      runs_dir: str | Path | None = None) -> None:
+                      runs_dir: str | Path | None = None,
+                      fase_inicial: int | None = None,
+                      flags_iniciais: list[str] | None = None) -> None:
     history: list[dict[str, Any]] = []
     console.print(Panel(objective, title=f"Investigacao: {investigation_id}", border_style="magenta"))
 
     executed: set[str] = set()
-
     last_next_step: str | None = None
 
+    phase_id: int = fase_inicial_from_knowledge(None, fase_inicial) if fase_inicial is not None else 1
+    flags: list[str] = list(dict.fromkeys(flags_iniciais or []))
+    if flags:
+        console.print(f"[dim]fase inicial pre-semeada: {phase_header(phase_id)} | flags: {', '.join(flags)}[/]")
+
     for i in range(max_iter):
-        console.print(f"\n[bold cyan]Iteracao {i+1}/{max_iter}[/]")
+        console.print(f"\n[bold cyan]Iteracao {i+1}/{max_iter} · {phase_header(phase_id)}[/]")
         try:
             proposal = propose_action(endpoint, model, history, objective,
-                                      runs_dir=runs_dir, investigation_id=investigation_id)
+                                      runs_dir=runs_dir, investigation_id=investigation_id,
+                                      fase=phase_id, flags=flags)
         except Exception as e:
             console.print(f"[red]LLM falhou ao propor acao: {e}[/]")
-            retry = Confirm.ask("Tentar novamente?", default=True)
-            if not retry:
+            if not _sim_nao("Tentar novamente?", default=True):
                 break
             continue
 
@@ -165,8 +225,10 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
                 proposal = propose_action(
                     endpoint, model, history, objective,
                     runs_dir=runs_dir, investigation_id=investigation_id,
+                    fase=phase_id, flags=flags,
                     extra_note="Voce ja executou exatamente esta acao nesta investigacao. "
                                "Proponha uma ferramenta e/ou parametros DIFERENTES que facam progresso. "
+                               "Se o objetivo ja foi cumprido, proponha conclude com um resumo. "
                                "Se quiser um nmap especifico (ex.: 'nmap -sV -p 3000 localhost'), "
                                "passe extra_args, ex.: {\"target\": \"localhost\", \"extra_args\": \"-sV -p 3000\"}.")
             except Exception as e:
@@ -176,8 +238,10 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
             console.print(Panel("O LLM insistiu na acao repetida — a decisao fica com voce no painel.",
                                 title="estagnacao", border_style="yellow"))
 
+        # conclude nunca executa ferramenta: o agente apenas declara conclusao,
+        # a evidencia guarda, e o humano confirma o encerramento
         if proposal.tool == "conclude":
-            # o agente decidiu encerrar: nada a executar
+            phase_id = 4  # concluir encerra na fase de relatorio
             console.print(Panel(
                 f"{proposal.hypothesis}\n\n{proposal.rationale}",
                 title="O agente concluiu", border_style="green"))
@@ -191,17 +255,30 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
                 "command": "",
                 "result": {"conclusion": True},
                 "llm_interpretation": proposal.rationale,
-                "human_validation": {"verdict": "concluded"},
+                "human_validation": {"verdict": "concluido"},
+                "fase": phase_id,
             })
-            history.append({"tool": "conclude", "result_summary": proposal.rationale[:800]})
+            history.append({"tool": "conclude", "result_summary": proposal.rationale[:800], "fase": phase_id})
             out = (Path(runs_dir) if runs_dir else Path("runs")) / investigation_id / "history.json"
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
-            encerrar = Confirm.ask("Confirmar encerramento da investigacao?", default=True)
-            if not encerrar:
+            if not _sim_nao("Confirmar encerramento da investigacao?", default=True):
                 history.append({"tool": "human", "result_summary": "humano pediu para continuar a investigacao"})
                 continue
             break
+
+        # flags declaradas pelo LLM: saneia contra o registro; o humano aprova no painel
+        llm_flags, _desc_flags = sanitize_flags(getattr(proposal, "flags", None))
+        fase_sugerida = getattr(proposal, "fase_sugerida", None)
+
+        # tool fora da fase = aviso, o humano decide (nunca bloqueia)
+        fase_tools = phase(phase_id)["tools"]
+        if fase_tools and proposal.tool not in fase_tools:
+            console.print(Panel(
+                f"Proposta '{proposal.tool}' esta fora da {phase_header(phase_id)} "
+                f"(tools recomendadas: {', '.join(fase_tools)}).\n"
+                f"Voce decide no painel — s para autorizar, n para recusar, editar para corrigir o comando.",
+                title="Fora da fase", border_style="yellow"))
 
         # divergencia entre a intencao declarada e a proposta (apenas avisa)
         expected = expected_tool_from_text(last_next_step) if last_next_step else None
@@ -222,7 +299,41 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
             console.print("[red]wordlist nao disponivel no SecLists clonado — abortando passo[/]")
             continue
 
-        decision = _human_decide(proposal)
+        decision = _human_decide(proposal, phase_id)
+
+        # o agente propos avancar de fase? so muda com o sim do humano
+        if (decision.action in ("approved", "modified") and fase_sugerida is not None):
+            try:
+                sugerida = int(fase_sugerida)
+            except (TypeError, ValueError):
+                sugerida = None
+            if sugerida is not None and sugerida in (0, 1, 2, 3, 4) and sugerida != phase_id:
+                if _sim_nao(f"O agente propoe avancar para a fase {sugerida} — {phase(sugerida)['nome']}. Avancar?", default=True):
+                    phase_id = sugerida
+
+        if decision.action == "skipped":
+            store.append({
+                "id": f"{investigation_id}-{i:03d}",
+                "investigation_id": investigation_id,
+                "hypothesis": proposal.hypothesis,
+                "proposed_action": proposal.model_dump(),
+                "human_decision": decision.model_dump(),
+                "tool": proposal.tool,
+                "command": "",
+                "result": {"skipped": True},
+                "llm_interpretation": "(passo pulado pelo humano — nada executado)",
+                "human_validation": {"verdict": "pulado"},
+                "fase": phase_id,
+            })
+            history.append({"tool": proposal.tool, "result_summary": "pulado pelo humano (nada executado)",
+                            "fase": phase_id})
+            out = (Path(runs_dir) if runs_dir else Path("runs")) / investigation_id / "history.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+            if _sim_nao("Continuar investigacao?", default=True):
+                continue
+            break
+
         if decision.action == "rejected":
             store.append({
                 "id": f"{investigation_id}-{i:03d}",
@@ -234,9 +345,10 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
                 "command": "",
                 "result": {"rejected": True},
                 "llm_interpretation": proposal.rationale,
-                "human_validation": {"verdict": "rejected"},
+                "human_validation": {"verdict": "rejeitado"},
+                "fase": phase_id,
             })
-            history.append({"tool": proposal.tool, "result": "rejected pelo humano"})
+            history.append({"tool": proposal.tool, "result": "rejeitado pelo humano", "fase": phase_id})
             break  # termina a investigacao ao rejeitar (evita loop infinito)
 
         final_params = decision.final_params or proposal.params
@@ -246,6 +358,7 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
             continue
 
         executed.add(executed_key(proposal.tool, final_params))
+        flags = merge_flags(flags, llm_flags)
         console.print(f"[bold yellow]Executando {proposal.tool}...[/]")
         try:
             result: ToolResult = tool_fn(final_params, allowed_hosts=allowed_hosts)
@@ -303,13 +416,16 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
 
         console.print(Panel(interpretation, title="Interpretacao LLM", border_style="yellow"))
 
-        verdict = Prompt.ask("Veredito humano (confirmed/refuted/inconclusive)",
-                             choices=["confirmed", "refuted", "inconclusive"], default="inconclusive")
+        # regra do veredito (PT): mostrada antes da pergunta
+        console.print(Panel(_VEREDITO_REGRA, title="Regra do veredito", border_style="blue"))
+        verdict = Prompt.ask("Veredito humano",
+                             choices=["confirmado", "refutado", "inconclusivo"],
+                             default="inconclusivo")
         hint = Prompt.ask("Instrucoes para o proximo passo (Enter = nenhuma)", default="").strip()
 
         store.append(build_evidence_item(investigation_id, i, proposal, decision,
                                          result, interpretation, verdict, instruction=hint,
-                                         refs_missing=missing or None))
+                                         refs_missing=missing or None, fase=phase_id))
 
         history.append({
             "tool": proposal.tool,
@@ -319,17 +435,29 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
             "human_instruction": hint or None,
             "next_step": last_next_step,
             "findings_note": findings_note(proposal.tool, result) or None,
+            "fase": phase_id,
+            "flags": list(flags),
         })
         # grava history a cada turno (sobrevive a Ctrl-C no meio da investigacao)
         out = (Path(runs_dir) if runs_dir else Path("runs")) / investigation_id / "history.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        cont = Confirm.ask("Continuar investigacao?", default=True)
-        if not cont:
+        if not _sim_nao("Continuar investigacao?", default=True):
             break
 
     # salva historico no mesmo runs_dir do store (evita poluir cwd)
     out = (Path(runs_dir) if runs_dir else Path("runs")) / investigation_id / "history.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # fim da investigacao: oferecer relatorio OWASP (WSTG + Top 10) das descobertas
+    if _sim_nao("Gerar relatorio OWASP das descobertas?", default=True):
+        try:
+            rdir = Path(runs_dir) if runs_dir else Path("runs")
+            report = write_owasp_report(store.list(investigation_id), investigation_id,
+                                        objective, rdir)
+            console.print(Panel(f"Relatorio OWASP escrito em {report}",
+                                title="relatorio", border_style="green"))
+        except Exception as e:
+            console.print(f"[red]Falha ao gerar relatorio OWASP: {e}[/]")
