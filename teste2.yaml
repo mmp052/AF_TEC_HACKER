@@ -1,0 +1,9 @@
+investigation_id: "autorizacao"
+objective: "Investigar se um usuario autenticado consegue realizar uma compra utilizando o saldo de outro usuario em http://localhost:3000. Utilizar duas contas de teste e registrar as requisicoes, a confirmacao do pedido e os saldos antes e depois da tentativa."
+
+# Recon pulado: alvo conhecido. Duas contas de teste = duas sessoes nomeadas (A e B).
+fase_inicial: 3
+conhecimento:
+  endpoints: ["/api/Users", "/rest/user/login", "/rest/user/whoami", "/api/BasketItems", "/rest/basket"]
+  suspeita: "idor/autorizacao — compra com saldo de outro usuario (sessoes A e B)"
+  evidencias: "registrar duas contas de teste e comparar saldos antes e depois da compra"

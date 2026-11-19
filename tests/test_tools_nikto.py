@@ -26,6 +26,14 @@ def test_comando_nao_usa_flags_inexistentes_no_nikto_debian():
     assert cmd[i + 1] == "no"
 
 
+def test_comando_nao_usa_nolookup_com_alvo_por_nome():
+    # observado no lab (recon-enumeracao-14): '-nolookup' no Debian/Ubuntu nikto
+    # aborta com "-skiplookup set, but given name" quando o alvo eh nome
+    # (localhost/juice-shop) — justamente nossa allowlist. Removido.
+    cmd = nikto_tool.build_nikto_command(URL, {}, "/tmp/report")
+    assert "-nolookup" not in cmd
+
+
 def test_tuning_valido_passa_na_linha_de_comando():
     cmd = nikto_tool.build_nikto_command(URL, {"tuning": "9"}, "/tmp/report")
     i = cmd.index("-Tuning")

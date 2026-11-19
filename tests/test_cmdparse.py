@@ -48,6 +48,46 @@ def test_http_request_host_externo_rejeitado():
         cmdparse.parse_command("http_request", "http_request http://example.com")
 
 
+def test_http_request_post_com_x_session_e_data():
+    p = cmdparse.parse_command(
+        "http_request",
+        f"http_request {URL}/rest/user/login -X POST -H 'Content-Type: application/json' "
+        f"--data '{{\"email\":\"a@b.c\"}}' --session A")
+    assert p["method"] == "POST"
+    assert p["session"] == "A"
+    assert p["body"] == '{"email":"a@b.c"}'
+    assert p["headers"]["Content-Type"] == "application/json"
+
+
+def test_http_request_flag_d_alias_de_body():
+    p = cmdparse.parse_command("http_request", f"http_request {URL}/x -d 'a=b'")
+    assert p["body"] == "a=b"
+
+
+def test_http_request_request_longo_e_metodo_minusculo():
+    p = cmdparse.parse_command("http_request", f"http_request {URL} --request post")
+    assert p["method"] == "POST"
+
+
+def test_http_request_metodo_invalido_rejeitado():
+    with pytest.raises(ValueError, match="metodo"):
+        cmdparse.parse_command("http_request", f"http_request {URL} -X HACK")
+
+
+def test_http_request_sessao_nome_invalido_rejeitado():
+    with pytest.raises(ValueError, match="sessao"):
+        cmdparse.parse_command("http_request", f"http_request {URL} --session '../x'")
+
+
+def test_preview_http_mostra_metodo_e_sessao():
+    out = cmdparse.preview_command(
+        "http_request",
+        {"url": f"{URL}/login", "method": "POST",
+         "headers": {"Content-Type": "application/json"}, "body": "{}", "session": "A"})
+    assert out.startswith("POST ")
+    assert "session=A" in out
+
+
 def test_gobuster_comando_completo():
     p = cmdparse.parse_command("gobuster",
         f"gobuster dir -u {URL} -w Discovery/Web-Content/common.txt --exclude-length 9984")

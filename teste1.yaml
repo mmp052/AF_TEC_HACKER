@@ -1,0 +1,9 @@
+investigation_id: "autenticacao"
+objective: "Investigar se e possivel autenticar-se em uma conta em http://localhost:3000 sem conhecer sua senha. Registrar as requisicoes e respostas e verificar o acesso a um recurso autenticado que identifique a conta acessada."
+
+# Recon pulado: alvo e tecnica conhecidos. Sessao nomeada "A" para o login.
+fase_inicial: 3
+conhecimento:
+  endpoints: ["/rest/user/login", "/rest/user/whoami","/#/login"]
+  suspeita: "sqli no login (campos email/password do JSON) — bypass de autenticacao"
+  evidencias: "Juice Shop expoe login JSON em POST /rest/user/login"

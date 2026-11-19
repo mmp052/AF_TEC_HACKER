@@ -26,6 +26,7 @@ from evidence_store import EvidenceStore
 from llm_io_log import append_llm_io
 from owasp_report import write_owasp_report
 from routing.wordlist import choose_wordlist, describe_choice
+from tools import session_store
 from tools.cmdparse import parse_command, preview_command
 from tools.gobuster_tool import run_gobuster
 from tools.http_tool import run_http
@@ -203,9 +204,10 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
     for i in range(max_iter):
         console.print(f"\n[bold cyan]Iteracao {i+1}/{max_iter} · {phase_header(phase_id)}[/]")
         try:
+            state_note = session_store.describe_sessions() or None
             proposal = propose_action(endpoint, model, history, objective,
                                       runs_dir=runs_dir, investigation_id=investigation_id,
-                                      fase=phase_id, flags=flags)
+                                      fase=phase_id, flags=flags, state_note=state_note)
         except Exception as e:
             console.print(f"[red]LLM falhou ao propor acao: {e}[/]")
             if not _sim_nao("Tentar novamente?", default=True):
@@ -225,7 +227,7 @@ def run_investigation(store: EvidenceStore, endpoint: str, model: str,
                 proposal = propose_action(
                     endpoint, model, history, objective,
                     runs_dir=runs_dir, investigation_id=investigation_id,
-                    fase=phase_id, flags=flags,
+                    fase=phase_id, flags=flags, state_note=state_note,
                     extra_note="Voce ja executou exatamente esta acao nesta investigacao. "
                                "Proponha uma ferramenta e/ou parametros DIFERENTES que facam progresso. "
                                "Se o objetivo ja foi cumprido, proponha conclude com um resumo. "

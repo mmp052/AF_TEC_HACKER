@@ -1,0 +1,9 @@
+investigation_id: "logica-negocio"
+objective: "Investigar se e possivel concluir uma compra por um valor inferior ao preco correto dos produtos em http://localhost:3000, manipulando os parametros da operacao. Comparar o valor esperado com o pedido registrado e o valor efetivamente debitado."
+
+# Recon pulado: alvo conhecido. Manipular parametros do checkout exige sessao autenticada ("A").
+fase_inicial: 3
+conhecimento:
+  endpoints: ["/rest/user/login", "/api/BasketItems", "/rest/basket"]
+  suspeita: "manipulacao de parametros (quantidade/preco) no checkout/basket"
+  evidencias: "comparar valor esperado com o pedido registrado e o valor debitado no saldo"

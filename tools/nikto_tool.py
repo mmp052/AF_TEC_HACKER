@@ -28,7 +28,7 @@ def build_nikto_command(url: str, params: dict, report_path: str | Path) -> list
     url_param = p.get("url", url) or url
     cmd = ["nikto", "-h", url_param,
            "-Format", "txt", "-o", str(report_path),
-           "-nointeractive", "-nolookup", "-ask", "no"]
+           "-nointeractive", "-ask", "no"]
 
     tuning = p.get("tuning")
     if tuning is not None:

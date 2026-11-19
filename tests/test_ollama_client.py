@@ -148,6 +148,42 @@ def test_build_propose_messages_destaca_instrucao_humana():
     assert "nao repita nmap" in msgs[1]["content"]
 
 
+def test_propose_action_envia_state_note_no_prompt():
+    respostas = iter([json.dumps(VALID_ACTION)])
+
+    fake_resp = mock.Mock()
+    fake_resp.raise_for_status = mock.Mock()
+    fake_resp.json = mock.Mock(side_effect=lambda: {"message": {"content": next(respostas)}})
+
+    client = mock.MagicMock()
+    client.__enter__.return_value = client
+    client.__exit__.return_value = False
+    client.post = mock.Mock(return_value=fake_resp)
+
+    with mock.patch.object(oc.httpx, "Client", return_value=client):
+        oc.propose_action("http://localhost:11434/api/chat", "qwen3:4b",
+                          [], "enumerar", state_note="Sessoes registradas:\n- A: bid=7")
+    sent = client.post.call_args.kwargs["json"]
+    assert "Sessoes registradas" in sent["messages"][1]["content"]
+
+
+def test_build_propose_messages_inclui_estado_de_sessoes():
+    msgs = oc.build_propose_messages([], "obj", state_note="Sessoes registradas:\n- A: bid=7")
+    assert "Sessoes registradas" in msgs[1]["content"]
+    assert "A: bid=7" in msgs[1]["content"]
+
+
+def test_mensagem_sem_estado_nao_inclui_bloco_de_sessao():
+    msgs = oc.build_propose_messages([], "obj")
+    assert "Sessoes registradas" not in msgs[1]["content"]
+
+
+def test_system_prompt_documenta_metodo_e_sessao_do_http_request():
+    assert "\"method\"" in oc.SYSTEM_PROMPT
+    assert "POST" in oc.SYSTEM_PROMPT
+    assert "session" in oc.SYSTEM_PROMPT
+
+
 def test_instrucao_humana_suprime_intencao_declarada_conflitante():
     history = [{"tool": "http_request",
                 "params": {"url": "http://localhost:3000"},

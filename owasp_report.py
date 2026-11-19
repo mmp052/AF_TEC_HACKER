@@ -6,6 +6,7 @@ trilha completa de passos, rotulado como inconclusivo/refutado/etc.
 """
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,9 +27,49 @@ _OWASP = {
 }
 _DEFAULT_OWASP = ("WSTG-INFO", None, None, "Informativo")
 
+# --- http_request: mapeamento por CLASSE de exploracao (indicativo) -----------
+# A tool e generica; a evidencia traz hipotese (o que o operador queria) e a URL.
+# Ordem importa: testa-se BUSL -> ATHZ (IDOR) -> ATHN antes do fallback generico.
+
+def _norm(s) -> str:
+    s = unicodedata.normalize("NFKD", str(s or ""))
+    return "".join(c for c in s if not unicodedata.combining(c)).lower()
+
+_BUSL_KEYS = ("valor", "preco", "desconto", "cupom", "quantidade", "inferior", "price")
+_ATHZ_KEYS = ("outro usuari", "outro s", "idor", "saldo", "wallet", "autoriz",
+              "insecure direct", "basket item")
+_ATHN_KEYS = ("senha", "password", "sem conhecer", "bypass", "sql injection",
+              "sqli", "login")
+
+_BUSL_OWASP = ("WSTG-BUSL (logica de negocio)",
+               "A04:2021 - Insecure Design",
+               "CWE-840 (business logic errors)", "Media/Alta (indicativa)")
+_ATHZ_OWASP = ("WSTG-ATHZ-04",
+               "A01:2021 - Broken Access Control",
+               "CWE-639 (insecure direct object references)", "Alta (indicativa)")
+_ATHN_OWASP = ("WSTG-ATHN-04",
+               "A07:2021 - Identification and Authentication Failures",
+               "CWE-285 / CWE-89", "Alta (indicativa)")
+
+
+def owasp_for_action(tool: str, hypothesis: str, url: str):
+    """Classifica o passo: para http_request, escolhe a classe OWASP pelo texto
+    da hipotese e da URL (indicativo, como o resto do relatorio)."""
+    if tool != "http_request":
+        return _OWASP.get(tool, _DEFAULT_OWASP)
+    corpus = _norm(hypothesis) + " " + _norm(url)
+    if any(k in corpus for k in _BUSL_KEYS):
+        return _BUSL_OWASP
+    if any(k in corpus for k in _ATHZ_KEYS):
+        return _ATHZ_OWASP
+    if any(k in corpus for k in _ATHN_KEYS):
+        return _ATHN_OWASP
+    return _OWASP.get(tool, _DEFAULT_OWASP)
+
+
 _WSTG_METHOD = {
     "nmap": "WSTG-INFO-09 — reconhecimento de rede/servico e fingerprint",
-    "http_request": "WSTG-INFO-09 — reconhecimento de aplicacao (resposta HTTP)",
+    "http_request": "WSTG-ATHN-04 / WSTG-ATHZ-04 / WSTG-BUSL — autenticacao, autorizacao e logica de negocio (mapeado por hipotese/URL)",
     "gobuster": "WSTG-CONF-05 — enumeracao de diretorios/interfaces",
     "wfuzz": "WSTG-INPVAL-01 — validacao de entrada (fuzzing)",
     "wapiti": "WSTG-INPVAL-05 / WSTG-INPVAL-01 — scan de vulnerabilidades",
@@ -43,6 +84,17 @@ _REMEDIACAO = {
         "https://cheatsheetseries.owasp.org/cheatsheets/Configuration_and_Deployment_Management_Cheat_Sheet.html "
         "| WSTG: https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/03-Configuration_and_Deployment_Management"),
 }
+_REMEDIACAO["A01:2021 - Broken Access Control"] = (
+    "OWASP Cheat Sheet — Authorization (controle de acesso/IDOR): "
+    "https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html "
+    "| WSTG-ATHZ: https://owasp.org/www-project-web-security-testing-guide/latest")
+_REMEDIACAO["A07:2021 - Identification and Authentication Failures"] = (
+    "OWASP Cheat Sheet — Authentication (bypass/schema): "
+    "https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html "
+    "| SQL Injection Prevention: https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html")
+_REMEDIACAO["A04:2021 - Insecure Design"] = (
+    "OWASP Top 10 — A04:2021 Insecure Design (threat model / abuse cases): "
+    "https://owasp.org/Top10/A04_2021-Insecure_Design/")
 _WSTG_FALLBACK = "OWASP Web Security Testing Guide: https://owasp.org/www-project-web-security-testing-guide/"
 
 
@@ -53,7 +105,9 @@ def owasp_for_tool(tool: str) -> tuple[str, str | None, str | None, str]:
 
 def _finding_md(idx: int, row) -> str:
     _id, hip, p, d, tool, cmd, r, interp, v = _row_fields(row)
-    wstg, top10, cwe, sev = owasp_for_tool(tool)
+    p_params = p.get("params") if isinstance(p, dict) else {}
+    url = str((p_params or {}).get("url", "")) if isinstance(p_params, dict) else ""
+    wstg, top10, cwe, sev = owasp_for_action(tool, hip, url)
     md = [f"### {idx}. [CONFIRMADO] {hip}", "",
           f"- **Ferramenta:** `{tool}` · **id:** {_id}",
           f"- **Comando:** `{cmd}`",

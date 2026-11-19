@@ -11,9 +11,9 @@ import shlex
 from pathlib import Path
 
 from guardrails import validate_url, validate_nmap_args, ALLOWED_HOSTS
-from tools import gobuster_tool, wapiti_tool, nikto_tool, wfuzz_tool
+from tools import gobuster_tool, wapiti_tool, nikto_tool, wfuzz_tool, session_store
 from tools.nmap_tool import normalize_target, parse_extra_args, version_args, sweep_args
-from tools.http_tool import build_command_str
+from tools.http_tool import build_command_str, ALLOWED_METHODS
 from tools.base import has_binary
 
 SECLISTS = Path("wordlists/SecLists")
@@ -75,8 +75,10 @@ def _parse_http(tokens: list[str]) -> dict:
     if rest and rest[0].lower() == "curl":
         rest = rest[1:]
     url = None
+    method = None
     headers: dict = {}
     body = ""
+    session = None
     i = 0
     while i < len(rest):
         t = rest[i]
@@ -90,12 +92,23 @@ def _parse_http(tokens: list[str]) -> dict:
             headers[k.strip()] = val.strip()
             i += 2
             continue
-        if t == "--data":
+        if t in ("--data", "-d"):
             body = _kv_next(rest, i, t)
             i += 2
             continue
+        if t in ("-X", "--request"):
+            v = _kv_next(rest, i, t).upper()
+            if v not in ALLOWED_METHODS:
+                raise ValueError(f"metodo nao suportado: {v} (permitidos: {sorted(ALLOWED_METHODS)})")
+            method = v
+            i += 2
+            continue
+        if t == "--session":
+            session = session_store.validate_session_name(_kv_next(rest, i, t))
+            i += 2
+            continue
         if t.startswith("-"):
-            raise ValueError(f"flag http_request nao suportada: {t} (use apenas url [--header 'K: V'] [--data 'corpo'])")
+            raise ValueError(f"flag http_request nao suportada: {t} (use apenas url [-X METODO] [--header 'K: V'] [--data 'corpo'] [--session NOME])")
         if url:
             raise ValueError(f"URL inesperada: {t}")
         url = t
@@ -104,10 +117,14 @@ def _parse_http(tokens: list[str]) -> dict:
         raise ValueError("http_request precisa de uma URL")
     validate_url(url, ALLOWED_HOSTS)
     params: dict = {"url": url}
+    if method:
+        params["method"] = method
     if headers:
         params["headers"] = headers
     if body:
         params["body"] = body
+    if session:
+        params["session"] = session
     return params
 
 
@@ -297,7 +314,9 @@ def preview_command(tool: str, params: dict) -> str:
         return ("nmap -p- --open -Pn " + target + " && "
                 "nmap -sV -p <abertas> --open -Pn " + target + "   # duas fases")
     if tool == "http_request":
-        return build_command_str("GET", p.get("url", ""), p.get("headers", {}), p.get("body", ""))
+        method = str(p.get("method", "GET")).upper()
+        return build_command_str(method, p.get("url", ""), p.get("headers", {}),
+                                 p.get("body", ""), p.get("session"))
     if tool == "gobuster":
         wl = resolve_seclists_rel(p["wordlist"]) if p.get("wordlist") else "<wordlist via routing>"
         return shlex.join(gobuster_tool.build_gobuster_command(

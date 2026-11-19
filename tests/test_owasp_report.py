@@ -69,6 +69,52 @@ def test_owasp_for_tool_mapeia_wstg_e_top10():
     assert "A05" in owasp_report.owasp_for_tool("nikto")[1]
 
 
+def test_http_request_generico_continua_info09():
+    assert owasp_report.owasp_for_tool("http_request")[0] == "WSTG-INFO-09"
+
+
+def _http_row(inv_id, hypothesis, url, verdict="confirmado"):
+    return {"id": inv_id, "tool": "http_request", "hypothesis": hypothesis,
+            "human_validation": {"verdict": verdict},
+            "command": f"POST {url}",
+            "result": {"exit_code": 0, "summary": "status=200", "stdout": "ok"},
+            "proposed_action": {"tool": "http_request",
+                                "params": {"url": url, "method": "POST"},
+                                "rationale": "r", "expected_evidence": "e"}}
+
+
+def test_http_request_auth_bypass_mapeado_a07_atnh04(tmp_path):
+    store = _store(tmp_path, [
+        _http_row("auth-000", "autenticar sem conhecer a senha via SQL injection no login",
+                  "http://localhost:3000/rest/user/login"),
+    ])
+    md = owasp_report.render_owasp_report(store.list("inv-owasp"), "inv-owasp", "obj")
+    achados = md.split("## Achados", 1)[1].split("\n## ", 1)[0]
+    assert "WSTG-ATHN-04" in achados
+    assert "A07" in achados
+
+
+def test_http_request_idor_mapeado_a01_athz04(tmp_path):
+    store = _store(tmp_path, [
+        _http_row("idor-000", "comprar usando o saldo de outro usuario (IDOR)",
+                  "http://localhost:3000/rest/basket/2"),
+    ])
+    md = owasp_report.render_owasp_report(store.list("inv-owasp"), "inv-owasp", "obj")
+    achados = md.split("## Achados", 1)[1].split("\n## ", 1)[0]
+    assert "WSTG-ATHZ-04" in achados
+    assert "A01" in achados
+
+
+def test_http_request_logica_mapeado_a04(tmp_path):
+    store = _store(tmp_path, [
+        _http_row("biz-000", "compra por valor inferior ao preco correto manipulando parametros",
+                  "http://localhost:3000/api/BasketItems"),
+    ])
+    md = owasp_report.render_owasp_report(store.list("inv-owasp"), "inv-owasp", "obj")
+    achados = md.split("## Achados", 1)[1].split("\n## ", 1)[0]
+    assert "A04" in achados
+
+
 def test_write_owasp_report_grava_arquivo(tmp_path):
     store = _store(tmp_path, _fixture_items())
     out = owasp_report.write_owasp_report(store.list("inv-owasp"), "inv-owasp", "obj", tmp_path / "runs")

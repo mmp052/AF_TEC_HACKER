@@ -25,8 +25,12 @@ Ferramenta: nmap
 - Flags bloqueadas no codigo: -oX, -oA, --script=, -iL. Sem scripts NSE.
 
 Ferramenta: http_request
-- params: {"url": "http://localhost:3000/caminho"} — GET apenas (seguro).
-- Bom para confirmar que uma porta/servico responde HTTP com conteudo.
+- params: {"url": "http://localhost:3000/caminho", "method": "GET|POST|PUT|PATCH|DELETE"} (default GET), "headers": {...}, "body": "...".
+- Ex. login: {"url": "http://localhost:3000/rest/user/login", "method": "POST", "headers": {"Content-Type": "application/json"}, "body": "{\"email\":\"a@b.c\",\"password\":\"x\"}", "session": "A"}
+- Sessoes nomeadas: passe "session": "A" (ou "B"). O http_request aplica o Bearer token capturado automaticamente (JSON da resposta com authentication.token) e reutiliza os cookies — voce NAO precisa (e NUNCA deve) copiar o token.
+- Use sessoes para registrar/autenticar duas contas de teste: A e B (ex.: POST /api/Users para registrar, POST /rest/user/login com session para autenticar).
+- Ex. autenticado: {"url": "http://localhost:3000/rest/user/whoami", "session": "A"}
+- Bom para qualquer rota da API (JSON) — preferível a gobuster/wfuzz para interagir com endpoints conhecidos.
 
 Ferramenta: gobuster
 - params: {"url": "http://localhost:3000"} — diretorio/arquivo. Wordlist automatica, NAO informe.
@@ -177,9 +181,12 @@ def build_history_digest(history: list[dict], max_entries: int = 5,
 
 def build_propose_messages(history: list[dict], objective: str, reforco: bool = False,
                              extra_note: str | None = None,
-                             fase: int = 1, flags: list[str] | None = None) -> list[dict]:
+                             fase: int = 1, flags: list[str] | None = None,
+                             state_note: str | None = None) -> list[dict]:
     user = (phase_prompt_block(fase, flags or []) +
             f"\nObjetivo: {objective}\n\nHistorico recente (resumido):\n" + build_history_digest(history))
+    if state_note:
+        user += "\n" + state_note
     if reforco:
         user += "\nATENCAO: responda APENAS JSON, sem markdown, sem texto antes/depois."
     if extra_note:
@@ -226,8 +233,10 @@ def propose_action(endpoint: str, model: str, history: list[dict],
                   objective: str, num_ctx: int = 4096,
                   runs_dir=None, investigation_id=None,
                   extra_note: str | None = None,
-                  fase: int = 1, flags: list[str] | None = None) -> ActionProposal:
-    msgs = build_propose_messages(history, objective, extra_note=extra_note, fase=fase, flags=flags)
+                  fase: int = 1, flags: list[str] | None = None,
+                  state_note: str | None = None) -> ActionProposal:
+    msgs = build_propose_messages(history, objective, extra_note=extra_note, fase=fase, flags=flags,
+                                  state_note=state_note)
 
     def _log(stage: str, msgs_, raw_: str) -> None:
         if runs_dir and investigation_id:
@@ -243,7 +252,8 @@ def propose_action(endpoint: str, model: str, history: list[dict],
         return parse_action(strip_think(raw))
     except Exception:
         # retry 1x com reforco
-        msgs = build_propose_messages(history, objective, reforco=True, fase=fase, flags=flags)
+        msgs = build_propose_messages(history, objective, reforco=True, fase=fase, flags=flags,
+                                       state_note=state_note)
         raw2 = ask_ollama(endpoint, model, msgs, num_ctx=num_ctx)
         _log("propose_retry", msgs, raw2)
         return parse_action(strip_think(raw2))
